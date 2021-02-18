@@ -92,7 +92,7 @@ static NSTextField *pauseLabel;
 static NSArray * supportedImageFileTypes;
 
 static QemuSemaphore display_init_sem;
-static bool allow_events;
+static bool inited;
 
 static NSInteger cbchangecount = -1;
 static QemuClipboardInfo *cbinfo;
@@ -433,7 +433,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     NSSize frameSize;
     QemuUIInfo info = {};
 
-    if (!qemu_console_is_graphic(dcl.con)) {
+    if (!inited) {
         return;
     }
 
@@ -442,11 +442,21 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         CGDirectDisplayID display = [[description objectForKey:@"NSScreenNumber"] unsignedIntValue];
         NSSize screenSize = [[[self window] screen] frame].size;
         CGSize screenPhysicalSize = CGDisplayScreenSize(display);
+        CVDisplayLinkRef displayLink;
 
         if (([[self window] styleMask] & NSWindowStyleMaskFullScreen) == 0) {
             frameSize = [self frame].size;
         } else {
             frameSize = screenSize;
+        }
+
+        if (!CVDisplayLinkCreateWithCGDisplay(display, &displayLink)) {
+            CVTime period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink);
+            CVDisplayLinkRelease(displayLink);
+            if (!(period.flags & kCVTimeIsIndefinite)) {
+                update_displaychangelistener(&dcl, 1000 * period.timeValue / period.timeScale);
+                info.refresh_rate = (int64_t)1000 * period.timeScale / period.timeValue;
+            }
         }
 
         info.width_mm = frameSize.width / screenSize.width * screenPhysicalSize.width;
@@ -582,7 +592,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 
 - (bool) handleEvent:(NSEvent *)event
 {
-    if(!allow_events) {
+    if(!inited) {
         /*
          * Just let OSX have all events that arrive before finishing executing
          * the block which cocoa_display_init() synchronously dispatched to the
@@ -2235,7 +2245,7 @@ static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
             dcl.ops = &dcl_ops;
         }
 
-        allow_events = true;
+        inited = true;
     });
 
     register_displaychangelistener(&dcl);
