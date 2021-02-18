@@ -83,7 +83,11 @@ typedef struct {
 static NSWindow *normalWindow;
 static DisplayChangeListener dcl;
 static DisplaySurface *surface;
-static QemuMutex surface_mutex;
+static QemuMutex draw_mutex;
+static int mouse_x;
+static int mouse_y;
+static int mouse_on;
+static CGImageRef cursor_cgimage;
 static int cursor_hide = 1;
 
 static int gArgc;
@@ -106,6 +110,9 @@ bool gl_surface_dirty;
 
 static QEMUGLContext view_ctx;
 static QemuGLShader *gls;
+static GLuint cursor_texture;
+static int cursor_texture_width;
+static int cursor_texture_height;
 
 #ifdef CONFIG_EGL
 static EGLSurface egl_surface;
@@ -172,6 +179,20 @@ static void handleAnyDeviceErrors(Error * err)
                                       encoding: NSASCIIStringEncoding]);
         error_free(err);
     }
+}
+
+static CGRect compute_cursor_clip_rect(int screen_height,
+                                       int given_mouse_x, int given_mouse_y,
+                                       int cursor_width, int cursor_height)
+{
+    CGRect rect;
+
+    rect.origin.x = MAX(0, -given_mouse_x);
+    rect.origin.y = 0;
+    rect.size.width = MIN(cursor_width, cursor_width + given_mouse_x);
+    rect.size.height = cursor_height - rect.origin.x;
+
+    return rect;
 }
 
 /*
@@ -311,6 +332,21 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     [NSCursor unhide];
 }
 
+- (CGRect) convertCursorClipRectToDraw:(CGRect)rect
+                          screenHeight:(int)screen_height
+                                mouseX:(int)given_mouse_x
+                                mouseY:(int)given_mouse_y
+{
+    CGFloat d = [self frame].size.height / (CGFloat)screen_height;
+
+    rect.origin.x = (rect.origin.x + given_mouse_x) * d;
+    rect.origin.y = (screen_height - rect.origin.y - given_mouse_y - rect.size.height) * d;
+    rect.size.width *= d;
+    rect.size.height *= d;
+
+    return rect;
+}
+
 - (void) drawRect:(NSRect) rect
 {
     COCOA_DEBUG("QemuCocoaView: drawRect\n");
@@ -327,7 +363,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
     CGContextSetInterpolationQuality (viewContextRef, kCGInterpolationNone);
     CGContextSetShouldAntialias (viewContextRef, NO);
 
-    qemu_mutex_lock(&surface_mutex);
+    qemu_mutex_lock(&draw_mutex);
 
     // draw screen bitmap directly to Core Graphics context
     if (!surface) {
@@ -384,9 +420,27 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         }
         CGImageRelease (imageRef);
         CGDataProviderRelease(dataProviderRef);
+
+        if (mouse_on) {
+            size_t cursor_width = CGImageGetWidth(cursor_cgimage);
+            size_t cursor_height = CGImageGetHeight(cursor_cgimage);
+            clipRect = compute_cursor_clip_rect(h, mouse_x, mouse_y,
+                                                cursor_width,
+                                                cursor_height);
+            CGRect drawRect = [self convertCursorClipRectToDraw:clipRect
+                                                   screenHeight:h
+                                                         mouseX:mouse_x
+                                                         mouseY:mouse_y];
+            clipImageRef = CGImageCreateWithImageInRect(
+                                                        cursor_cgimage,
+                                                        clipRect
+                                                        );
+            CGContextDrawImage(viewContextRef, drawRect, clipImageRef);
+            CGImageRelease (clipImageRef);
+        }
     }
 
-    qemu_mutex_unlock(&surface_mutex);
+    qemu_mutex_unlock(&draw_mutex);
 }
 
 - (NSSize) computeUnzoomedSize
@@ -1770,6 +1824,7 @@ static void *call_qemu_main(void *opaque)
     status = qemu_main(gArgc, gArgv, *_NSGetEnviron());
     COCOA_DEBUG("Second thread: qemu_main() returned, exiting\n");
     [cbowner release];
+    CGImageRelease(cursor_cgimage);
 #ifdef CONFIG_OPENGL
     qemu_gl_fini_shader(gls);
     if (view_ctx) {
@@ -1791,7 +1846,7 @@ int main (int argc, char **argv) {
     qemu_thread_create(&thread, "qemu_main", call_qemu_main,
                        NULL, QEMU_THREAD_DETACHED);
 
-    qemu_mutex_init(&surface_mutex);
+    qemu_mutex_init(&draw_mutex);
 
     COCOA_DEBUG("Main thread: waiting for display_init_sem\n");
     qemu_sem_wait(&display_init_sem);
@@ -1845,13 +1900,13 @@ static void cocoa_update(DisplayChangeListener *dcl,
     COCOA_DEBUG("qemu_cocoa: cocoa_update\n");
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        qemu_mutex_lock(&surface_mutex);
+        qemu_mutex_lock(&draw_mutex);
         if (updated != surface) {
-            qemu_mutex_unlock(&surface_mutex);
+            qemu_mutex_unlock(&draw_mutex);
             return;
         }
         int full_height = surface_height(surface);
-        qemu_mutex_unlock(&surface_mutex);
+        qemu_mutex_unlock(&draw_mutex);
 
         CGFloat d = [cocoaView frame].size.height / full_height;
         NSRect rect = NSMakeRect(x * d, (full_height - y - h) * d, w * d, h * d);
@@ -1871,22 +1926,22 @@ static void cocoa_switch(DisplayChangeListener *dcl,
 
     [cocoaView updateUIInfo];
 
-    qemu_mutex_lock(&surface_mutex);
+    qemu_mutex_lock(&draw_mutex);
     surface = new_surface;
     if (!updating_screen) {
         updating_screen = true;
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            qemu_mutex_lock(&surface_mutex);
+            qemu_mutex_lock(&draw_mutex);
             updating_screen = false;
             int w = surface_width(surface);
             int h = surface_height(surface);
-            qemu_mutex_unlock(&surface_mutex);
+            qemu_mutex_unlock(&draw_mutex);
 
             [cocoaView updateScreenWidth:w height:h];
         });
     }
-    qemu_mutex_unlock(&surface_mutex);
+    qemu_mutex_unlock(&draw_mutex);
     [pool release];
 }
 
@@ -1922,11 +1977,121 @@ static void cocoa_refresh(DisplayChangeListener *dcl)
     [pool release];
 }
 
+static void cocoa_mouse_set(DisplayChangeListener *dcl, int x, int y, int on)
+{
+    qemu_mutex_lock(&draw_mutex);
+    int full_height = surface_height(surface);
+    size_t cursor_width = CGImageGetWidth(cursor_cgimage);
+    size_t cursor_height = CGImageGetHeight(cursor_cgimage);
+    int old_x = mouse_x;
+    int old_y = mouse_y;
+    int old_on = mouse_on;
+    mouse_x = x;
+    mouse_y = y;
+    mouse_on = on;
+    qemu_mutex_unlock(&draw_mutex);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (old_on) {
+            CGRect clip_rect = compute_cursor_clip_rect(full_height,
+                                                        old_x, old_y,
+                                                        cursor_width,
+                                                        cursor_height);
+            CGRect draw_rect =
+                [cocoaView convertCursorClipRectToDraw:clip_rect
+                                          screenHeight:full_height
+                                                mouseX:old_x
+                                                mouseY:old_y];
+            [cocoaView setNeedsDisplayInRect:draw_rect];
+        }
+
+        if (on) {
+            CGRect clip_rect = compute_cursor_clip_rect(full_height, x, y,
+                                                        cursor_width,
+                                                        cursor_height);
+            CGRect draw_rect =
+                [cocoaView convertCursorClipRectToDraw:clip_rect
+                                          screenHeight:full_height
+                                                mouseX:x
+                                                mouseY:y];
+            [cocoaView setNeedsDisplayInRect:draw_rect];
+        }
+    });
+}
+
+static void cocoa_cursor_define(DisplayChangeListener *dcl, QEMUCursor *cursor)
+{
+    int width = cursor->width;
+    int height = cursor->height;
+
+    CGDataProviderRef dataProviderRef = CGDataProviderCreateWithData(
+        NULL,
+        cursor->data,
+        width * height * 4,
+        NULL
+    );
+
+    CGImageRef imageRef = CGImageCreate(
+        width, //width
+        height, //height
+        8, //bitsPerComponent
+        32, //bitsPerPixel
+        width * 4, //bytesPerRow
+        CGColorSpaceCreateWithName(kCGColorSpaceSRGB), //colorspace
+        kCGBitmapByteOrder32Little | kCGImageAlphaFirst, //bitmapInfo
+        dataProviderRef, //provider
+        NULL, //decode
+        0, //interpolate
+        kCGRenderingIntentDefault //intent
+    );
+
+    qemu_mutex_lock(&draw_mutex);
+    int full_height = surface_height(surface);
+    int x = mouse_x;
+    int y = mouse_y;
+    int on = mouse_on;
+    size_t old_width;
+    size_t old_height;
+    if (cursor_cgimage) {
+        old_width = CGImageGetWidth(cursor_cgimage);
+        old_height = CGImageGetHeight(cursor_cgimage);
+    } else {
+        old_width = 0;
+        old_height = 0;
+    }
+    cursor_cgimage = CGImageCreateCopy(imageRef);
+    qemu_mutex_unlock(&draw_mutex);
+
+    CGImageRelease(imageRef);
+    CGDataProviderRelease(dataProviderRef);
+
+    if (on) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CGFloat d = [cocoaView frame].size.height / full_height;
+            NSRect rect;
+
+            rect.origin.x = d * x;
+            rect.origin.y = d * (full_height - y - old_height);
+            rect.size.width = d * old_width;
+            rect.size.height = d * old_height;
+            [cocoaView setNeedsDisplayInRect:rect];
+
+            rect.origin.x = d * x;
+            rect.origin.y = d * (full_height - y - height);
+            rect.size.width = d * width;
+            rect.size.height = d * height;
+            [cocoaView setNeedsDisplayInRect:rect];
+       });
+    }
+}
+
 static const DisplayChangeListenerOps dcl_ops = {
     .dpy_name          = "cocoa",
     .dpy_gfx_update = cocoa_update,
     .dpy_gfx_switch = cocoa_switch,
     .dpy_refresh = cocoa_refresh,
+    .dpy_mouse_set = cocoa_mouse_set,
+    .dpy_cursor_define = cocoa_cursor_define,
 };
 
 #ifdef CONFIG_OPENGL
@@ -2059,6 +2224,29 @@ static void cocoa_scanout_disable(DisplayChangeListener *dcl)
     }
 }
 
+static void cocoa_gl_render_cursor()
+{
+    if (!mouse_on) {
+        return;
+    }
+
+    NSSize size = [cocoaView convertSizeToBacking:[cocoaView frame].size];
+    int full_height = surface_height(surface);
+    CGFloat d = size.height / full_height;
+
+    glViewport(
+        d * mouse_x,
+        d * (full_height - mouse_y - cursor_texture_height),
+        d * cursor_texture_width,
+        d * cursor_texture_height
+    );
+    glBindTexture(GL_TEXTURE_2D, cursor_texture);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    qemu_gl_run_texture_blit(gls, false);
+    glDisable(GL_BLEND);
+}
+
 static void cocoa_gl_render_surface(DisplayChangeListener *dcl)
 {
     cocoa_scanout_disable(dcl);
@@ -2066,7 +2254,11 @@ static void cocoa_gl_render_surface(DisplayChangeListener *dcl)
     NSSize size = [cocoaView convertSizeToBacking:[cocoaView frame].size];
 
     surface_gl_setup_viewport(gls, surface, size.width, size.height);
+    glBindTexture(GL_TEXTURE_2D, surface->texture);
     surface_gl_render_texture(gls, surface);
+
+    cocoa_gl_render_cursor();
+
     cocoa_gl_flush();
 }
 
@@ -2136,7 +2328,46 @@ static void cocoa_gl_scanout_flush(DisplayChangeListener *dcl,
         glViewport(0, 0, size.width, size.height);
         glBindTexture(GL_TEXTURE_2D, gl_scanout_id);
         qemu_gl_run_texture_blit(gls, gl_scanout_y0_top);
+
+        cocoa_gl_render_cursor();
+
         cocoa_gl_flush();
+    });
+}
+
+static void cocoa_gl_mouse_set(DisplayChangeListener *dcl, int x, int y, int on)
+{
+    mouse_x = x;
+    mouse_y = y;
+    mouse_on = on;
+
+    DisplayGL *dg = dgs + qemu_console_get_index(dcl->con);
+
+    if (dg->scanout_id) {
+        cocoa_gl_scanout_flush(dcl, 0, 0, 0, 0);
+    } else {
+        with_view_ctx(^{
+            cocoa_gl_render_surface(dg);
+        });
+    }
+}
+
+static void cocoa_gl_cursor_define(DisplayChangeListener *dcl, QEMUCursor *cursor)
+{
+    cursor_texture_width = cursor->width;
+    cursor_texture_height = cursor->height;
+
+    with_view_ctx(^{
+        glBindTexture(GL_TEXTURE_2D, cursor_texture);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, cursor->width);
+        glTexImage2D(GL_TEXTURE_2D, 0,
+                     epoxy_is_desktop_gl() ? GL_RGBA : GL_BGRA,
+                     cursor->width,
+                     cursor->height,
+                     0, GL_BGRA, GL_UNSIGNED_BYTE,
+                     cursor->data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     });
 }
 
@@ -2146,6 +2377,8 @@ static const DisplayChangeListenerOps dcl_gl_ops = {
     .dpy_gfx_switch         = cocoa_gl_switch,
     .dpy_gfx_check_format   = console_gl_check_format,
     .dpy_refresh            = cocoa_gl_refresh,
+    .dpy_mouse_set           = cocoa_gl_mouse_set,
+    .dpy_cursor_define       = cocoa_gl_cursor_define,
 
     .dpy_gl_scanout_disable = cocoa_gl_scanout_disable,
     .dpy_gl_scanout_texture = cocoa_gl_scanout_texture,
@@ -2233,6 +2466,7 @@ static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
             }
 
             gls = qemu_gl_init_shader();
+            glGenTextures(1, &cursor_texture);
 
             // register vga output callbacks
             dcl.ops = &dcl_gl_ops;
