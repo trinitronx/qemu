@@ -105,7 +105,7 @@ static QemuEvent cbevent;
 #ifdef CONFIG_OPENGL
 
 uint32_t gl_scanout_id;
-bool gl_scanout_y0_top;
+DisplayGLTextureBorrower gl_scanout_borrow;
 bool gl_surface_dirty;
 
 static QEMUGLContext view_ctx;
@@ -2304,20 +2304,25 @@ static void cocoa_gl_scanout_disable(DisplayChangeListener *dcl)
 
 static void cocoa_gl_scanout_texture(DisplayChangeListener *dcl,
                                      uint32_t backing_id,
-                                     bool backing_y_0_top,
-                                     uint32_t backing_width,
-                                     uint32_t backing_height,
+                                     DisplayGLTextureBorrower backing_borrow,
                                      uint32_t x, uint32_t y,
                                      uint32_t w, uint32_t h)
 {
     gl_scanout_id = backing_id;
-    gl_scanout_y0_top = backing_y_0_top;
+    gl_scanout_borrow = backing_borrow;
 }
 
 static void cocoa_gl_scanout_flush(DisplayChangeListener *dcl,
                                    uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 {
+    bool y0_top;
+
     if (!gl_scanout_id) {
+        return;
+    }
+
+    GLint texture = gl_scanout_borrow(gl_scanout_id, &y0_top, NULL, NULL);
+    if (!texture) {
         return;
     }
 
@@ -2326,8 +2331,8 @@ static void cocoa_gl_scanout_flush(DisplayChangeListener *dcl,
 
         glBindFramebuffer(GL_FRAMEBUFFER_EXT, 0);
         glViewport(0, 0, size.width, size.height);
-        glBindTexture(GL_TEXTURE_2D, gl_scanout_id);
-        qemu_gl_run_texture_blit(gls, gl_scanout_y0_top);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        qemu_gl_run_texture_blit(gls, y0_top);
 
         cocoa_gl_render_cursor();
 
@@ -2341,13 +2346,11 @@ static void cocoa_gl_mouse_set(DisplayChangeListener *dcl, int x, int y, int on)
     mouse_y = y;
     mouse_on = on;
 
-    DisplayGL *dg = dgs + qemu_console_get_index(dcl->con);
-
-    if (dg->scanout_id) {
+    if (gl_scanout_id) {
         cocoa_gl_scanout_flush(dcl, 0, 0, 0, 0);
     } else {
         with_view_ctx(^{
-            cocoa_gl_render_surface(dg);
+            cocoa_gl_render_surface(dcl);
         });
     }
 }

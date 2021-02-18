@@ -1075,9 +1075,7 @@ static void displaychangelistener_display_console(DisplayChangeListener *dcl,
                dcl->ops->dpy_gl_scanout_texture) {
         dcl->ops->dpy_gl_scanout_texture(dcl,
                                          con->scanout.texture.backing_id,
-                                         con->scanout.texture.backing_y_0_top,
-                                         con->scanout.texture.backing_width,
-                                         con->scanout.texture.backing_height,
+                                         con->scanout.texture.backing_borrow,
                                          con->scanout.texture.x,
                                          con->scanout.texture.y,
                                          con->scanout.texture.width,
@@ -1872,9 +1870,7 @@ void dpy_gl_scanout_disable(QemuConsole *con)
 
 void dpy_gl_scanout_texture(QemuConsole *con,
                             uint32_t backing_id,
-                            bool backing_y_0_top,
-                            uint32_t backing_width,
-                            uint32_t backing_height,
+                            DisplayGLTextureBorrower backing_borrow,
                             uint32_t x, uint32_t y,
                             uint32_t width, uint32_t height)
 {
@@ -1883,16 +1879,14 @@ void dpy_gl_scanout_texture(QemuConsole *con,
 
     con->scanout.kind = SCANOUT_TEXTURE;
     con->scanout.texture = (ScanoutTexture) {
-        backing_id, backing_y_0_top, backing_width, backing_height,
+        backing_id, backing_borrow,
         x, y, width, height
     };
     QLIST_FOREACH(dcl, &s->listeners, next) {
         if (con != (dcl->con ? dcl->con : active_console)) {
             continue;
         }
-        dcl->ops->dpy_gl_scanout_texture(dcl, backing_id,
-                                         backing_y_0_top,
-                                         backing_width, backing_height,
+        dcl->ops->dpy_gl_scanout_texture(dcl, backing_id, backing_borrow,
                                          x, y, width, height);
     }
 }

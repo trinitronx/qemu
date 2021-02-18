@@ -928,18 +928,24 @@ static void qemu_spice_gl_scanout_disable(DisplayChangeListener *dcl)
 }
 
 static void qemu_spice_gl_scanout_texture(DisplayChangeListener *dcl,
-                                          uint32_t tex_id,
-                                          bool y_0_top,
-                                          uint32_t backing_width,
-                                          uint32_t backing_height,
+                                          uint32_t backing_id,
+                                          DisplayGLTextureBorrower backing_borrow,
                                           uint32_t x, uint32_t y,
                                           uint32_t w, uint32_t h)
 {
     SimpleSpiceDisplay *ssd = container_of(dcl, SimpleSpiceDisplay, dcl);
     EGLint stride = 0, fourcc = 0;
     int fd = -1;
+    bool y_0_top;
+    uint32_t backing_width;
+    uint32_t backing_height;
 
-    assert(tex_id);
+    GLuint tex_id = backing_borrow(backing_id, &y_0_top,
+                                   &backing_width, &backing_height);
+    if (!tex_id) {
+        return;
+    }
+
     fd = egl_get_fd_for_texture(tex_id, &stride, &fourcc, NULL);
     if (fd < 0) {
         fprintf(stderr, "%s: failed to get fd for texture\n", __func__);

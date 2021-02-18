@@ -75,9 +75,7 @@ int sdl2_gl_make_context_current(DisplayGLCtx *dgc,
 void sdl2_gl_scanout_disable(DisplayChangeListener *dcl);
 void sdl2_gl_scanout_texture(DisplayChangeListener *dcl,
                              uint32_t backing_id,
-                             bool backing_y_0_top,
-                             uint32_t backing_width,
-                             uint32_t backing_height,
+                             DisplayGLTextureBorrower backing_borrow,
                              uint32_t x, uint32_t y,
                              uint32_t w, uint32_t h);
 void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,

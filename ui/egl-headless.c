@@ -54,13 +54,11 @@ static void egl_scanout_disable(DisplayChangeListener *dcl)
     egl_fb_destroy(&edpy->blit_fb);
 }
 
-static void egl_scanout_texture(DisplayChangeListener *dcl,
-                                uint32_t backing_id,
-                                bool backing_y_0_top,
-                                uint32_t backing_width,
-                                uint32_t backing_height,
-                                uint32_t x, uint32_t y,
-                                uint32_t w, uint32_t h)
+static void egl_scanout_imported_texture(DisplayChangeListener *dcl,
+                                         uint32_t backing_texture,
+                                         bool backing_y_0_top,
+                                         uint32_t backing_width,
+                                         uint32_t backing_height)
 {
     egl_dpy *edpy = container_of(dcl, egl_dpy, dcl);
 
@@ -68,7 +66,7 @@ static void egl_scanout_texture(DisplayChangeListener *dcl,
 
     /* source framebuffer */
     egl_fb_setup_for_tex(&edpy->guest_fb,
-                         backing_width, backing_height, backing_id, false);
+                         backing_width, backing_height, backing_texture, false);
 
     /* dest framebuffer */
     if (edpy->blit_fb.width  != backing_width ||
@@ -78,17 +76,33 @@ static void egl_scanout_texture(DisplayChangeListener *dcl,
     }
 }
 
-static void egl_scanout_dmabuf(DisplayChangeListener *dcl,
-                               QemuDmaBuf *dmabuf)
+static void egl_scanout_texture(DisplayChangeListener *dcl,
+                                uint32_t backing_id,
+                                DisplayGLTextureBorrower backing_borrow,
+                                uint32_t x, uint32_t y,
+                                uint32_t w, uint32_t h)
+{
+    bool backing_y_0_top;
+    uint32_t backing_width;
+    uint32_t backing_height;
+
+    GLuint backing_texture = backing_borrow(backing_id, &backing_y_0_top,
+                                            &backing_width, &backing_height);
+    if (backing_texture) {
+        egl_scanout_imported_texture(dcl, backing_texture, backing_y_0_top,
+                                     backing_width, backing_height);
+    }
+}
+
+static void egl_scanout_dmabuf(DisplayChangeListener *dcl, QemuDmaBuf *dmabuf)
 {
     egl_dmabuf_import_texture(dmabuf);
     if (!dmabuf->texture) {
         return;
     }
 
-    egl_scanout_texture(dcl, dmabuf->texture,
-                        false, dmabuf->width, dmabuf->height,
-                        0, 0, dmabuf->width, dmabuf->height);
+    egl_scanout_imported_texture(dcl, dmabuf->texture,
+                                 false, dmabuf->width, dmabuf->height);
 }
 
 static void egl_cursor_dmabuf(DisplayChangeListener *dcl,
