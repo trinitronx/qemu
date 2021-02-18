@@ -420,7 +420,7 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 - (void) updateUIInfo
 {
     NSSize frameSize;
-    QemuUIInfo info;
+    QemuUIInfo info = {};
 
     if (!qemu_console_is_graphic(dcl.con)) {
         return;
@@ -442,14 +442,10 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
         info.height_mm = frameSize.height / screenSize.height * screenPhysicalSize.height;
     } else {
         frameSize = [self frame].size;
-        info.width_mm = 0;
-        info.height_mm = 0;
     }
 
     NSSize frameBackingSize = [self convertSizeToBacking:frameSize];
 
-    info.xoff = 0;
-    info.yoff = 0;
     info.width = frameBackingSize.width;
     info.height = frameBackingSize.height;
 
