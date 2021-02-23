@@ -1910,7 +1910,7 @@ DEF("display", HAS_ARG, QEMU_OPTION_display,
     "-display cocoa[,full-grab=on|off]\n"
     "              [,swap-option-command=on|off]\n"
 #endif
-#if defined(CONFIG_OPENGL)
+#if defined(CONFIG_OPENGL) && defined(CONFIG_EGL)
     "-display egl-headless[,rendernode=<file>]\n"
 #endif
 #if defined(CONFIG_DBUS_DISPLAY)
