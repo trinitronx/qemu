@@ -24,7 +24,9 @@ softmmu_ss.add(when: 'CONFIG_LINUX', if_true: files(
   'input-linux.c',
   'udmabuf.c',
 ))
-softmmu_ss.add(when: cocoa, if_true: files('cocoa.m'))
+softmmu_ss.add(when: cocoa,
+               if_true: files('cocoa/main.m', 'cocoa/pasteboard_type_owner.m',
+                              'cocoa/view.m', 'cocoa/app_controller.m'))
 
 vnc_ss = ss.source_set()
 vnc_ss.add(files(
