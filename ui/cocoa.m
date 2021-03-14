@@ -227,7 +227,6 @@ static CGRect compute_cursor_clip_rect(int screen_height,
 - (BOOL) isMouseGrabbed;
 - (BOOL) isAbsoluteEnabled;
 - (BOOL) isSwapOptionCommandEnabled;
-- (void) raiseAllKeys;
 @end
 
 QemuCocoaView *cocoaView;
@@ -1031,18 +1030,6 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 - (BOOL) isAbsoluteEnabled {return isAbsoluteEnabled;}
 - (BOOL) isSwapOptionCommandEnabled {return screen.swap_option_command;}
 
-/*
- * Makes the target think all down keys are being released.
- * This prevents a stuck key problem, since we will not see
- * key up events for those keys after we have lost focus.
- */
-- (void) raiseAllKeys
-{
-    with_iothread_lock(^{
-        qkbd_state_lift_all_keys(kbd);
-    });
-}
-
 - (void) raiseAllButtons
 {
     with_iothread_lock(^{
@@ -1217,13 +1204,6 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
 {
     return (proposedOptions & ~(NSApplicationPresentationAutoHideDock | NSApplicationPresentationAutoHideMenuBar)) |
            NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
-}
-
-/* Called when QEMU goes into the background */
-- (void) applicationWillResignActive: (NSNotification *)aNotification
-{
-    COCOA_DEBUG("QemuCocoaAppController: applicationWillResignActive\n");
-    [cocoaView raiseAllKeys];
 }
 
 /* We abstract the method called by the Enter Fullscreen menu item
