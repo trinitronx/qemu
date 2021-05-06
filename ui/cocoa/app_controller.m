@@ -372,6 +372,21 @@ static void addRemovableDevicesMenuItems(void)
     [cocoaView frameUpdated];
 }
 
+- (void)windowDidResignKey:(NSNotification *)notification
+{
+    [cocoaView ungrabMouse];
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)notification
+{
+    /* If we became key and are fullscreen there is no point in waiting for
+     * a click to grab the mouse.
+     */
+    if (([[cocoaView window] styleMask] & NSWindowStyleMaskFullScreen) != 0) {
+        [cocoaView grabMouse];
+    }
+}
+
 /* Called when the user clicks on a window's close button */
 - (BOOL)windowShouldClose:(id)sender
 {
