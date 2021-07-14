@@ -22,5 +22,54 @@
  * THE SOFTWARE.
  */
 
-#define UI_COCOA_PASTEBOARD_TYPE_OWNER
+#include "qemu/osdep.h"
+
 #include "ui/cocoa.h"
+#include "qemu/main-loop.h"
+
+@implementation QemuCocoaPasteboardTypeOwner
+
+- (id)initWith:(QemuCocoaClipboard *)aCb
+{
+    COCOA_DEBUG("QemuCocoaView: initWithFrame\n");
+
+    self = [super init];
+    if (self) {
+        cb = aCb;
+    }
+    return self;
+}
+
+- (void)pasteboard:(NSPasteboard *)sender provideDataForType:(NSPasteboardType)type
+{
+    if (type != NSPasteboardTypeString) {
+        return;
+    }
+
+    qemu_mutex_lock_iothread();
+
+    QemuClipboardInfo *info = qemu_clipboard_info_ref(cb->info);
+    qemu_event_reset(&cb->event);
+    qemu_clipboard_request(info, QEMU_CLIPBOARD_TYPE_TEXT);
+
+    while (info == cb->info &&
+           info->types[QEMU_CLIPBOARD_TYPE_TEXT].available &&
+           info->types[QEMU_CLIPBOARD_TYPE_TEXT].data == NULL) {
+        qemu_mutex_unlock_iothread();
+        qemu_event_wait(&cb->event);
+        qemu_mutex_lock_iothread();
+    }
+
+    if (info == cb->info) {
+        NSData *data = [[NSData alloc] initWithBytes:info->types[QEMU_CLIPBOARD_TYPE_TEXT].data
+                                       length:info->types[QEMU_CLIPBOARD_TYPE_TEXT].size];
+        [sender setData:data forType:NSPasteboardTypeString];
+        [data release];
+    }
+
+    qemu_clipboard_info_unref(info);
+
+    qemu_mutex_unlock_iothread();
+}
+
+@end
