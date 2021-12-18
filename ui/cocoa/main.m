@@ -80,6 +80,29 @@ static void cocoa_gl_destroy_context(DisplayGLCtx *dgc, QEMUGLContext ctx);
 }
 @end
 
+static void cocoa_mouse_mode_change_notify(Notifier *notifier, void *data)
+{
+    static bool shared_is_absolute;
+
+    qatomic_set(&shared_is_absolute, qemu_input_is_absolute());
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        bool is_absolute = qatomic_read(&shared_is_absolute);
+        if (is_absolute == [[appController cocoaView] isAbsoluteEnabled]) {
+            return;
+        }
+
+        if (is_absolute && [[appController cocoaView] isMouseGrabbed]) {
+            [[appController cocoaView] ungrabMouse];
+        }
+        [[appController cocoaView] setAbsoluteEnabled:is_absolute];
+    });
+}
+
+static Notifier mouse_mode_change_notifier = {
+    .notify = cocoa_mouse_mode_change_notify
+};
+
 static void cocoa_clipboard_notify(Notifier *notifier, void *data);
 static void cocoa_clipboard_request(QemuClipboardInfo *info,
                                     QemuClipboardType type);
@@ -215,6 +238,7 @@ int main (int argc, char **argv) {
     // Create an Application controller
     appController = [[QemuCocoaAppController alloc] initWithScreen:&screen];
     [NSApp setDelegate:appController];
+    [[appController cocoaView] setAbsoluteEnabled:qemu_input_is_absolute()];
 
     // Start the main event loop
     COCOA_DEBUG("Main thread: entering OSX run loop\n");
@@ -289,17 +313,6 @@ static void cocoa_refresh(DisplayChangeListener *dcl)
 
     COCOA_DEBUG("qemu_cocoa: cocoa_refresh\n");
     graphic_hw_update(NULL);
-
-    if (qemu_input_is_absolute()) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (![[appController cocoaView] isAbsoluteEnabled]) {
-                if ([[appController cocoaView] isMouseGrabbed]) {
-                    [[appController cocoaView] ungrabMouse];
-                }
-            }
-            [[appController cocoaView] setAbsoluteEnabled:YES];
-        });
-    }
 
     if (cbchangecount != [[NSPasteboard generalPasteboard] changeCount]) {
         qemu_clipboard_info_unref(qemucb.info);
@@ -750,6 +763,8 @@ static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
 
     /* Tell main thread to go ahead and create the app and enter the run loop */
     qemu_sem_post(&display_init_sem);
+
+    qemu_add_mouse_mode_change_notifier(&mouse_mode_change_notifier);
 
     qemu_event_init(&qemucb.event, false);
     cbowner = [[QemuCocoaPasteboardTypeOwner alloc] initWith:&qemucb];
