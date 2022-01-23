@@ -155,7 +155,6 @@ static void gui_update(void *opaque)
     uint64_t dcl_interval;
     DisplayState *ds = opaque;
     DisplayChangeListener *dcl;
-    QemuConsole *con;
 
     ds->refreshing = true;
     dpy_refresh(ds);
@@ -170,11 +169,6 @@ static void gui_update(void *opaque)
     }
     if (ds->update_interval != interval) {
         ds->update_interval = interval;
-        QTAILQ_FOREACH(con, &consoles, next) {
-            if (con->hw_ops->update_interval) {
-                con->hw_ops->update_interval(con->hw, interval);
-            }
-        }
         trace_console_refresh(interval);
     }
     ds->last_update = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
@@ -1081,9 +1075,7 @@ static void displaychangelistener_display_console(DisplayChangeListener *dcl,
                dcl->ops->dpy_gl_scanout_texture) {
         dcl->ops->dpy_gl_scanout_texture(dcl,
                                          con->scanout.texture.backing_id,
-                                         con->scanout.texture.backing_y_0_top,
-                                         con->scanout.texture.backing_width,
-                                         con->scanout.texture.backing_height,
+                                         con->scanout.texture.backing_borrow,
                                          con->scanout.texture.x,
                                          con->scanout.texture.y,
                                          con->scanout.texture.width,
@@ -1475,10 +1467,30 @@ static bool displaychangelistener_has_dmabuf(DisplayChangeListener *dcl)
     return false;
 }
 
+static bool dpy_gl_compatible_with(QemuConsole *con, DisplayChangeListener *dcl,
+                                   Error **errp)
+{
+    if (!con->gl) {
+        return true;
+    }
+
+    if (con->gl->ops->compatible_dcl != dcl->ops) {
+        error_setg(errp, "Display %s is incompatible with the GL context",
+                   dcl->ops->dpy_name);
+        return false;
+    }
+
+    return true;
+}
+
 static bool dpy_compatible_with(QemuConsole *con,
                                 DisplayChangeListener *dcl, Error **errp)
 {
     int flags;
+
+    if (!dpy_gl_compatible_with(con, dcl, errp)) {
+        return false;
+    }
 
     flags = con->hw_ops->get_flags ? con->hw_ops->get_flags(con->hw) : 0;
 
@@ -1509,29 +1521,18 @@ void qemu_console_set_display_gl_ctx(QemuConsole *con, DisplayGLCtx *gl)
     con->gl = gl;
 }
 
-static bool dpy_gl_compatible_with(QemuConsole *con, DisplayChangeListener *dcl)
-{
-    if (!con->gl) {
-        return true;
-    }
-
-    return con->gl->ops->compatible_dcl == dcl->ops;
-}
-
 void register_displaychangelistener(DisplayChangeListener *dcl)
 {
     QemuConsole *con;
 
     assert(!dcl->ds);
 
-    if (dcl->con && !dpy_gl_compatible_with(dcl->con, dcl)) {
-        error_report("Display %s is incompatible with the GL context",
-                     dcl->ops->dpy_name);
-        exit(1);
-    }
-
     if (dcl->con) {
         dpy_compatible_with(dcl->con, dcl, &error_fatal);
+    } else {
+        QTAILQ_FOREACH(con, &consoles, next) {
+            dpy_compatible_with(con, dcl, &error_fatal);
+        }
     }
 
     trace_displaychangelistener_register(dcl, dcl->ops->dpy_name);
@@ -1860,15 +1861,16 @@ void dpy_gl_scanout_disable(QemuConsole *con)
         con->scanout.kind = SCANOUT_NONE;
     }
     QLIST_FOREACH(dcl, &s->listeners, next) {
+        if (con != (dcl->con ? dcl->con : active_console)) {
+            continue;
+        }
         dcl->ops->dpy_gl_scanout_disable(dcl);
     }
 }
 
 void dpy_gl_scanout_texture(QemuConsole *con,
                             uint32_t backing_id,
-                            bool backing_y_0_top,
-                            uint32_t backing_width,
-                            uint32_t backing_height,
+                            DisplayGLTextureBorrower backing_borrow,
                             uint32_t x, uint32_t y,
                             uint32_t width, uint32_t height)
 {
@@ -1877,13 +1879,14 @@ void dpy_gl_scanout_texture(QemuConsole *con,
 
     con->scanout.kind = SCANOUT_TEXTURE;
     con->scanout.texture = (ScanoutTexture) {
-        backing_id, backing_y_0_top, backing_width, backing_height,
+        backing_id, backing_borrow,
         x, y, width, height
     };
     QLIST_FOREACH(dcl, &s->listeners, next) {
-        dcl->ops->dpy_gl_scanout_texture(dcl, backing_id,
-                                         backing_y_0_top,
-                                         backing_width, backing_height,
+        if (con != (dcl->con ? dcl->con : active_console)) {
+            continue;
+        }
+        dcl->ops->dpy_gl_scanout_texture(dcl, backing_id, backing_borrow,
                                          x, y, width, height);
     }
 }
@@ -1897,6 +1900,9 @@ void dpy_gl_scanout_dmabuf(QemuConsole *con,
     con->scanout.kind = SCANOUT_DMABUF;
     con->scanout.dmabuf = dmabuf;
     QLIST_FOREACH(dcl, &s->listeners, next) {
+        if (con != (dcl->con ? dcl->con : active_console)) {
+            continue;
+        }
         dcl->ops->dpy_gl_scanout_dmabuf(dcl, dmabuf);
     }
 }
@@ -1908,6 +1914,9 @@ void dpy_gl_cursor_dmabuf(QemuConsole *con, QemuDmaBuf *dmabuf,
     DisplayChangeListener *dcl;
 
     QLIST_FOREACH(dcl, &s->listeners, next) {
+        if (con != (dcl->con ? dcl->con : active_console)) {
+            continue;
+        }
         if (dcl->ops->dpy_gl_cursor_dmabuf) {
             dcl->ops->dpy_gl_cursor_dmabuf(dcl, dmabuf,
                                            have_hot, hot_x, hot_y);
@@ -1922,6 +1931,9 @@ void dpy_gl_cursor_position(QemuConsole *con,
     DisplayChangeListener *dcl;
 
     QLIST_FOREACH(dcl, &s->listeners, next) {
+        if (con != (dcl->con ? dcl->con : active_console)) {
+            continue;
+        }
         if (dcl->ops->dpy_gl_cursor_position) {
             dcl->ops->dpy_gl_cursor_position(dcl, pos_x, pos_y);
         }
@@ -1935,6 +1947,9 @@ void dpy_gl_release_dmabuf(QemuConsole *con,
     DisplayChangeListener *dcl;
 
     QLIST_FOREACH(dcl, &s->listeners, next) {
+        if (con != (dcl->con ? dcl->con : active_console)) {
+            continue;
+        }
         if (dcl->ops->dpy_gl_release_dmabuf) {
             dcl->ops->dpy_gl_release_dmabuf(dcl, dmabuf);
         }
@@ -1951,6 +1966,9 @@ void dpy_gl_update(QemuConsole *con,
 
     graphic_hw_gl_block(con, true);
     QLIST_FOREACH(dcl, &s->listeners, next) {
+        if (con != (dcl->con ? dcl->con : active_console)) {
+            continue;
+        }
         dcl->ops->dpy_gl_update(dcl, x, y, w, h);
     }
     graphic_hw_gl_block(con, false);

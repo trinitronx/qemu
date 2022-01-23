@@ -24,7 +24,9 @@ softmmu_ss.add(when: 'CONFIG_LINUX', if_true: files(
   'input-linux.c',
   'udmabuf.c',
 ))
-softmmu_ss.add(when: cocoa, if_true: files('cocoa.m'))
+softmmu_ss.add(when: cocoa,
+               if_true: files('cocoa/main.m', 'cocoa/pasteboard_type_owner.m',
+                              'cocoa/view.m', 'cocoa/app_controller.m'))
 
 vnc_ss = ss.source_set()
 vnc_ss.add(files(
@@ -57,13 +59,15 @@ if config_host.has_key('CONFIG_OPENGL')
   opengl_ss = ss.source_set()
   opengl_ss.add(gbm)
   opengl_ss.add(when: [opengl, pixman, 'CONFIG_OPENGL'],
-               if_true: files('shader.c', 'console-gl.c', 'egl-helpers.c', 'egl-context.c'))
+               if_true: files('shader.c', 'console-gl.c'))
+  opengl_ss.add(when: [opengl, pixman, 'CONFIG_OPENGL', 'CONFIG_EGL'],
+               if_true: files('egl-helpers.c', 'egl-context.c'))
   ui_modules += {'opengl' : opengl_ss}
 endif
 
 if config_host.has_key('CONFIG_OPENGL') and gbm.found()
   egl_headless_ss = ss.source_set()
-  egl_headless_ss.add(when: [opengl, gbm, pixman, 'CONFIG_OPENGL'],
+  egl_headless_ss.add(when: [opengl, gbm, pixman, 'CONFIG_OPENGL', 'CONFIG_EGL'],
                       if_true: files('egl-headless.c'))
   ui_modules += {'egl-headless' : egl_headless_ss}
 endif
@@ -98,8 +102,10 @@ if gtk.found()
   gtk_ss = ss.source_set()
   gtk_ss.add(gtk, vte, pixman, files('gtk.c', 'gtk-clipboard.c'))
   gtk_ss.add(when: x11, if_true: files('x_keymap.c'))
-  gtk_ss.add(when: [opengl, 'CONFIG_OPENGL'], if_true: files('gtk-gl-area.c'))
-  gtk_ss.add(when: [x11, opengl, 'CONFIG_OPENGL'], if_true: files('gtk-egl.c'))
+  gtk_ss.add(when: [opengl, 'CONFIG_OPENGL', 'CONFIG_EGL'],
+             if_true: files('gtk-gl-area.c'))
+  gtk_ss.add(when: [x11, opengl, 'CONFIG_OPENGL', 'CONFIG_EGL'],
+             if_true: files('gtk-egl.c'))
   ui_modules += {'gtk' : gtk_ss}
 endif
 
@@ -112,7 +118,7 @@ if sdl.found()
     'sdl2-input.c',
     'sdl2.c',
   ))
-  sdl_ss.add(when: [opengl, 'CONFIG_OPENGL'], if_true: files('sdl2-gl.c'))
+  sdl_ss.add(when: [opengl, 'CONFIG_OPENGL', 'CONFIG_EGL'], if_true: files('sdl2-gl.c'))
   sdl_ss.add(when: x11, if_true: files('x_keymap.c'))
   ui_modules += {'sdl' : sdl_ss}
 endif
