@@ -130,6 +130,18 @@ void exynos4210_combiner_get_gpioin(Exynos4210Irq *irqs, DeviceState *dev,
         int ext);
 
 /*
+ * Old FIFO fxns ... missed in patch?
+ */
+/* UART FIFO */
+typedef struct {
+    uint8_t    *data;
+    uint32_t    sp, rp; /* store and retrieve pointers */
+    uint32_t    size;
+} Exynos4210UartFIFO;
+
+static int fifo_elements_number(Exynos4210UartFIFO *q);
+static int fifo_empty_elements_number(Exynos4210UartFIFO *q);
+/*
  * exynos4210 UART
  */
 DeviceState *exynos4210_uart_create(hwaddr addr,

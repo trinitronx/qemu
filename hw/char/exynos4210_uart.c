@@ -177,6 +177,21 @@ static const char *exynos4210_uart_regname(hwaddr  offset)
     return NULL;
 }
 
+static int fifo_elements_number(Exynos4210UartFIFO *q)
+{
+    if (q->sp < q->rp) {
+        return q->size - q->rp + q->sp;
+    }
+
+    return q->sp - q->rp;
+}
+
+static int fifo_empty_elements_number(Exynos4210UartFIFO *q)
+{
+    return q->size - fifo_elements_number(q);
+}
+
+
 static uint32_t exynos4210_uart_FIFO_trigger_level(uint32_t channel,
                                                    uint32_t reg)
 {
