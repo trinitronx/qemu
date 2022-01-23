@@ -30,6 +30,9 @@ config ARM_GIC_TCG
     default y
     depends on ARM_GIC && TCG
 
+config APPLE_AIC
+    bool
+
 config ARM_GIC_KVM
     bool
     default y
